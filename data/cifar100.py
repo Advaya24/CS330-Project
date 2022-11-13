@@ -85,18 +85,35 @@ class CIFARDataset(Dataset):
         if class_partition == 'unseen':
             assert partition == 'test'
         with open(os.path.join(root, class_partition, partition + '.pkl'), 'rb') as f:
-            self.dataset = pickle.load(f)
+            dataset = pickle.load(f)
+            self.images = dataset.data
+            self.labels = dataset.targets
         self.transform = transform
     
     def __getitem__(self, index):
-        img = self.dataset.data[index]
-        label = np.array([self.dataset.targets[index]])
+        img = self.images[index]
+        label = np.array([self.labels[index]])
         if self.transform is not None:
             img = self.transform(img)
         return img, label
     
     def __len__(self):
-        return self.dataset.data.shape[0]
+        return self.images.shape[0]
+
+    def sample_k_images_per_target(self, k: int=1):
+        unique_labels = np.unique(self.labels)
+        image_shape = self.images[0].shape
+        out_images = np.zeros((unique_labels.shape[0], k, *image_shape))
+        out_labels = np.zeros((unique_labels.shape[0], k))
+        for i, lab in enumerate(unique_labels):
+            idx = np.where(self.labels == lab)[0]
+            k_idx = np.random.choice(idx, k)
+            out_images[i] = self.images[k_idx]
+            out_labels[i] = lab
+        return out_images, out_labels
+
+
+
 
 
 if __name__ == '__main__':
@@ -122,6 +139,11 @@ if __name__ == '__main__':
             for i, (image, label) in enumerate(dl):
                 break
             
-            print(class_partition, partition, 'images shape:', d.dataset.data.shape, 'labels shape:', d.dataset.targets.shape)
-            totals[class_partition] += d.dataset.data.shape[0]
+            # sample k images per label class:
+            out_images, out_labels = d.sample_k_images_per_target(5)
+            print("Sample k=5 images per label class:", "images: ", out_images.shape, "labels: ", out_labels.shape)
+
+
+            print(class_partition, partition, 'images:', d.images.shape, 'labels:', d.labels.shape, '\n')
+            totals[class_partition] += d.images.shape[0]
     print(totals)
