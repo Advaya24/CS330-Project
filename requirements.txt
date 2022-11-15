@@ -1,1 +1,5 @@
 torch==1.12.1
+torchvision
+numpy
+tensorboard_logger
+protobuf==3.20.*
