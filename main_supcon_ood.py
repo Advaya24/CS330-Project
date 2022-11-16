@@ -284,7 +284,7 @@ def main():
                 opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=opt.saved_epoch)))
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        initial_epoch = checkpoint['epoch']
+        initial_epoch = checkpoint['epoch'] + 1
 
 
     # training routine
