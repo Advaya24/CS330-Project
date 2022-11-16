@@ -78,6 +78,7 @@ def parse_option():
                         help='warm-up for large batch training')
     parser.add_argument('--trial', type=str, default='0',
                         help='id for recording multiple runs')
+    parser.add_argument('--saved_epoch', type=int, default=-1, help='parameter to specify which epoch to resume training from')
 
     opt = parser.parse_args()
 
@@ -275,8 +276,19 @@ def main():
     # tensorboard
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
 
+    initial_epoch = 1
+
+    if opt.saved_epoch > 0:
+        print('==> Loading model...')
+        checkpoint = torch.load(os.path.join(
+                opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=opt.saved_epoch)))
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        initial_epoch = checkpoint['epoch']
+
+
     # training routine
-    for epoch in range(1, opt.epochs + 1):
+    for epoch in range(initial_epoch, opt.epochs + 1):
         adjust_learning_rate(opt, optimizer, epoch)
 
         # train for one epoch
