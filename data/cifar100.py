@@ -61,7 +61,16 @@ def download_data():
 
 
 
-        
+def pretrain_create(root = 'cifar-dataset'):
+    with open(os.path.join(root, 'seen', 'train.pkl'), 'rb') as f:
+        dataset = pickle.load(f)
+    labels = np.unique(dataset.targets)
+    selected = np.random.choice(labels, 5)
+    inds = np.in1d(dataset.targets, selected)
+    dataset.targets = dataset.targets[inds]
+    dataset.data = dataset.data[inds]
+    with open(os.path.join(root, 'seen', 'pretrain.pkl'), 'wb') as f:
+        dataset = pickle.dump(dataset, f)
 
 
 class CIFARDataset(Dataset):
@@ -70,6 +79,7 @@ class CIFARDataset(Dataset):
     |___ cifar-dataset
         |___ seen
             |___ train (21600 images over 60 classes)
+            |___ pretrain (subset containing only 5/60 classes)
             |___ val (7200 images over 60 classes)
             |___ test (7200 images over 60 classes)
         |___ new
@@ -89,6 +99,7 @@ class CIFARDataset(Dataset):
             self.images = dataset.data
             self.labels = dataset.targets
         self.transform = transform
+
     
     def __getitem__(self, index):
         img = self.images[index]
@@ -118,6 +129,7 @@ class CIFARDataset(Dataset):
 
 if __name__ == '__main__':
     download_data()
+    pretrain_create()
     
     train_pct, val_pct = 0.6, 0.2
     test_pct = 1 - train_pct - val_pct
@@ -146,4 +158,7 @@ if __name__ == '__main__':
 
             print(class_partition, partition, 'images:', d.images.shape, 'labels:', d.labels.shape, '\n')
             totals[class_partition] += d.images.shape[0]
+    
+    d = CIFARDataset(class_partition='seen', partition='pretrain')
+    print('seen pretrain ', 'images:', d.images.shape, 'labels:', d.labels.shape, '\n')
     print(totals)
