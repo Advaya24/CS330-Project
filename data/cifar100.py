@@ -69,8 +69,9 @@ def pretrain_create(root = 'cifar-dataset'):
     inds = np.in1d(dataset.targets, selected)
     dataset.targets = dataset.targets[inds]
     dataset.data = dataset.data[inds]
-    with open(os.path.join(root, 'seen', 'pretrain.pkl'), 'wb') as f:
-        dataset = pickle.dump(dataset, f)
+    if not os.path.exists(os.path.join(root, 'seen', 'pretrain.pkl')):
+        with open(os.path.join(root, 'seen', 'pretrain.pkl'), 'wb') as f:
+            dataset = pickle.dump(dataset, f)
 
 
 class CIFARDataset(Dataset):
