@@ -51,6 +51,8 @@ def parse_option():
                         help='weight decay')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help='momentum')
+    parser.add_argument('--embedding_dim', type=int, default=128,
+                        help='embedding dimension for the model')
 
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
@@ -186,7 +188,7 @@ def set_loader(opt):
 
 
 def set_model(opt):
-    model = SupConResNet(name=opt.model)
+    model = SupConResNet(name=opt.model, feat_dim=opt.embedding_dim)
     criterion = SupConLoss(temperature=opt.temp)
 
     # enable synchronized Batch Normalization
