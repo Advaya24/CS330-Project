@@ -6,6 +6,8 @@ import numpy as np
 import pickle
 
 torch.manual_seed(0)
+torch.cuda.manual_seed(0)
+np.random.seed(0)
 
 class CIFARData:
     def __init__(self, data, targets):
@@ -32,11 +34,12 @@ def download_data():
         |___ unseen
             |___ test (12000 images over 20 classes)
     '''
-    train_data = datasets.CIFAR100('./', download=True)
-    test_data = datasets.CIFAR100('./', train=False, download=True)
+    train_data = datasets.CIFAR10('./', download=True)
+    test_data = datasets.CIFAR10('./', train=False, download=True)
     train_pct, val_pct = 0.6, 0.2
     test_pct = 1 - train_pct - val_pct
-    num_classes = 100 # cifar-100
+    # num_classes = 100 # cifar-100
+    num_classes = 10 # cifar-10
     class_partitions = {'seen': (train_pct, {'train': train_pct, 'val': val_pct, 'test': test_pct}), 'new': (val_pct, {'train': train_pct, 'val': val_pct, 'test': test_pct}), 'unseen': (test_pct, {'test': 1})}
     classes = list(range(num_classes))
 
@@ -57,7 +60,7 @@ def download_data():
             sample_size = int(num_instances*part_pct)
             idx = sampled_inds[:sample_size]
             sampled_inds[sample_size:]
-            CIFARData(combined_data[idx], combined_targets[idx]).save(os.path.join('cifar-dataset', class_partition), partition + '.pkl')
+            CIFARData(combined_data[idx], combined_targets[idx]).save(os.path.join('cifar10-dataset', class_partition), partition + '.pkl')
 
 
 
@@ -124,6 +127,18 @@ class CIFARDataset(Dataset):
             out_labels[i] = lab
         return out_images, out_labels
 
+    # def sample_epsilon(self, support_size=5, query_size=1, split=0.8):
+    #     unique_labels = np.unique(self.labels)
+    #     image_shape = self.images[0].shape
+    #     support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split))
+    #     support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
+    #     support_labels = np.zeros((support_classes.shape[0], support_size))
+    #     for i, lab in enumerate(support_classes):
+    #         idx = np.where(self.labels == lab)[0]
+    #         k_idx = np.random.choice(idx, k)
+    #         out_images[i] = self.images[k_idx]
+    #         out_labels[i] = lab
+
 
 
 
@@ -141,7 +156,7 @@ if __name__ == '__main__':
         totals[class_partition] = 0
         
         for partition, part_pct in partitions.items():
-            d = CIFARDataset(class_partition=class_partition, partition=partition) # load dataset for given specification
+            d = CIFARDataset(root='cifar10-dataset', class_partition=class_partition, partition=partition) # load dataset for given specification
             
             # can now index dataset
             for i in range(1):
