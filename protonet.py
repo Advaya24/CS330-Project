@@ -17,7 +17,7 @@ SUMMARY_INTERVAL = 10
 SAVE_INTERVAL = 100
 PRINT_INTERVAL = 10
 VAL_INTERVAL = PRINT_INTERVAL * 5
-NUM_TASKS_PER_EPOCH = 600
+NUM_TASKS_PER_ITERATION = 32
 NUM_TEST_TASKS = 600
 
 
@@ -77,7 +77,8 @@ class ProtoNet:
         self._log_dir = log_dir
         os.makedirs(self._log_dir, exist_ok=True)
 
-        self._start_train_step = 0
+        self._start_train_enc_step = 0
+        self._start_train_thres_step = 0
 
     def embd_train_step(self, task):
         """Computes ProtoNet mean loss (and accuracy) on a batch of tasks.
@@ -155,7 +156,7 @@ class ProtoNet:
         )
 
 ################################################ TODO ##############################################
-    def train(self, dataloader_train, dataloader_val, writer):
+    def train_encoder(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
         """Train the ProtoNet.
 
         Consumes dataloader_train to optimize weights of ProtoNetNetwork
@@ -167,15 +168,22 @@ class ProtoNet:
             dataloader_val (DataLoader): loader for validation tasks
             writer (SummaryWriter): TensorBoard logger
         """
-        print(f'Starting training at iteration {self._start_train_step}.')
-        for i_step, task_batch in enumerate(
-                dataloader_train,
-                start=self._start_train_step
-        ):
-            self._optimizer.zero_grad()
-            loss, accuracy_support, accuracy_query = self._step(task_batch)
+        print(f'Starting training at iteration {self._start_train_enc_step}.')
+        for i_step in range(self._start_train_enc_step, num_train_iterations):
+            self.encoder_optimizer.zero_grad()
+            loss_batch = []
+            accuracy_support_batch = []
+            accuracy_query_batch = []
+            for _ in range(batch_size):
+                loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_train.sample_novel_cls())
+                loss_batch.append(loss_task)
+                accuracy_query_batch.append(accuracy_query_task)
+                accuracy_support_batch.append(accuracy_support_task)
+            loss, accuracy_support, accuracy_query = (torch.mean(torch.stack(loss_batch)),
+                                                        np.mean(accuracy_support_batch),
+                                                        np.mean(accuracy_query_batch))
             loss.backward()
-            self._optimizer.step()
+            self.encoder_optimizer.step()
 
             if i_step % PRINT_INTERVAL == 0:
                 print(
@@ -199,10 +207,19 @@ class ProtoNet:
             if i_step % VAL_INTERVAL == 0:
                 with torch.no_grad():
                     losses, accuracies_support, accuracies_query = [], [], []
-                    for val_task_batch in dataloader_val:
-                        loss, accuracy_support, accuracy_query = (
-                            self._step(val_task_batch)
-                        )
+                    for _ in range(4):
+
+                        loss_batch = []
+                        accuracy_support_batch = []
+                        accuracy_query_batch = []
+                        for _ in range(batch_size):
+                            loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_val.sample_novel_cls())
+                            loss_batch.append(loss_task)
+                            accuracy_query_batch.append(accuracy_query_task)
+                            accuracy_support_batch.append(accuracy_support_task)
+                        loss, accuracy_support, accuracy_query = (torch.mean(torch.stack(loss_batch)),
+                                                        np.mean(accuracy_support_batch),
+                                                        np.mean(accuracy_query_batch))
                         losses.append(loss.item())
                         accuracies_support.append(accuracy_support)
                         accuracies_query.append(accuracy_query)
@@ -229,7 +246,7 @@ class ProtoNet:
 
             if i_step % SAVE_INTERVAL == 0:
                 self._save(i_step)
-
+################################################ TODO ##############################################
     def test(self, dataloader_test):
         """Evaluate the ProtoNet on test tasks.
 
@@ -328,7 +345,9 @@ def main(args):
         protonet.train(
             dataloader_train,
             dataloader_val,
-            writer
+            writer,
+            args.num_train_iterations,
+            args.batch_size
         )
     else:
         print(
