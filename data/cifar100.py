@@ -127,19 +127,68 @@ class CIFARDataset(Dataset):
             out_labels[i] = lab
         return out_images, out_labels
 
-    # def sample_epsilon(self, support_size=5, query_size=1, split=0.8):
-    #     unique_labels = np.unique(self.labels)
-    #     image_shape = self.images[0].shape
-    #     support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split))
-    #     support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
-    #     support_labels = np.zeros((support_classes.shape[0], support_size))
-    #     for i, lab in enumerate(support_classes):
-    #         idx = np.where(self.labels == lab)[0]
-    #         k_idx = np.random.choice(idx, k)
-    #         out_images[i] = self.images[k_idx]
-    #         out_labels[i] = lab
+    def sample_epsilon(self, support_size=5, query_size=1, split=4/6):
+        unique_labels = np.unique(self.labels)
+        image_shape = self.images[0].shape
+        support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
+        support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
+        support_labels = np.zeros((support_classes.shape[0], support_size))
+        for i, lab in enumerate(np.random.permutation(support_classes)):
+            idx = np.where(self.labels == lab)[0]
+            k_idx = np.random.choice(idx, support_size)
+            support_images[i] = self.images[k_idx]
+            support_labels[i] = 0
 
+        ood_classes = np.setdiff1d(unique_labels, support_classes)
+        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
+        query_labels = np.zeros((unique_labels.shape[0], query_size))
 
+        for i, lab in enumerate(np.random.permutation(unique_labels)):
+            idx = np.where(self.labels == lab)[0]
+            k_idx = np.random.choice(idx, query_size)
+            query_images[i] = self.images[k_idx]
+            query_labels[i] = lab in ood_classes
+
+        return support_images, support_labels, query_images, query_labels
+
+    def sample_novel_cls(self, support_size=5, num_novels_in_support=1, query_size=1, split=4/6):
+        """
+        Note: this only works for class labels starting from 0.
+        labels will look like this: 
+        array([2., 3., 0., 5., 1., 4.])
+
+        Instead of masking the labels, we create a mask of shape (num_classes, support_size, 1, 1, 1)
+        Finding prototypes needs a couple of steps:
+        i) prototypes_shuffled = (support_images*suppport_mask).sum(1) / (suppport_mask.sum(1))
+        ii) idx = np.argsort(support_labels)
+        iii) prototypes = prototypes_shuffled[idx]
+        """
+        unique_labels = np.unique(self.labels)
+        image_shape = self.images[0].shape
+        support_images = np.zeros((unique_labels.shape[0], support_size, *image_shape))
+        support_labels = np.zeros((unique_labels.shape[0]))
+        mappings = np.random.permutation(unique_labels)
+        for i, lab in enumerate(np.random.permutation(unique_labels)):
+            idx = np.where(self.labels == lab)[0]
+            k_idx = np.random.choice(idx, support_size)
+            support_images[i] = self.images[k_idx]
+            support_labels[i] = mappings[lab]
+
+        num_ood = int(unique_labels.shape[0] * (1-split))
+        mask_row_idx = np.random.choice(unique_labels, num_ood, replace=False)
+        support_mask = np.ones((unique_labels.shape[0], support_size, 1, 1, 1))
+        support_mask[mask_row_idx, num_novels_in_support:] = 0
+
+        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
+        query_labels = np.zeros((unique_labels.shape[0]))
+
+        for i, lab in enumerate(np.random.permutation(unique_labels)):
+            idx = np.where(self.labels == lab)[0]
+            k_idx = np.random.choice(idx, query_size)
+            query_images[i] = self.images[k_idx]
+            query_labels[i] = mappings[lab]
+
+        return support_images, support_labels, support_mask, query_images, query_labels
 
 
 
