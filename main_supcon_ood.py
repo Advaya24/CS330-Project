@@ -194,8 +194,8 @@ def set_model(opt):
     criterion = SupConLoss(temperature=opt.temp)
 
     # enable synchronized Batch Normalization
-    if opt.syncBN:
-        model = apex.parallel.convert_syncbn_model(model)
+    # if opt.syncBN:
+    #     model = apex.parallel.convert_syncbn_model(model)
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:
