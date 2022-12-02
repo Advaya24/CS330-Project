@@ -17,7 +17,6 @@ SUMMARY_INTERVAL = 10
 SAVE_INTERVAL = 100
 PRINT_INTERVAL = 10
 VAL_INTERVAL = PRINT_INTERVAL * 5
-NUM_TASKS_PER_ITERATION = 32
 NUM_TEST_TASKS = 600
 
 
@@ -54,7 +53,7 @@ class ProtoNetNetwork(nn.Module):
     
 
 
-class ProtoNet:
+class ProtoNetTrainer:
     """Trains and assesses a prototypical network and ood detection."""
 
     def __init__(self, encoder, proto_learning_rate, threshold_learning_rate, log_dir):
@@ -155,7 +154,7 @@ class ProtoNet:
         util.bin_score(prob_ood_query, labels_query)
         )
 
-################################################ TODO ##############################################
+
     def train_encoder(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
         """Train the ProtoNet.
 
@@ -175,7 +174,7 @@ class ProtoNet:
             accuracy_support_batch = []
             accuracy_query_batch = []
             for _ in range(batch_size):
-                loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_train.sample_novel_cls())
+                loss_task, accuracy_support_task, accuracy_query_task = self.embd_train_step(dataloader_train.sample_novel_cls())
                 loss_batch.append(loss_task)
                 accuracy_query_batch.append(accuracy_query_task)
                 accuracy_support_batch.append(accuracy_support_task)
@@ -245,27 +244,118 @@ class ProtoNet:
                 )
 
             if i_step % SAVE_INTERVAL == 0:
-                self._save(i_step)
-################################################ TODO ##############################################
-    def test(self, dataloader_test):
-        """Evaluate the ProtoNet on test tasks.
+                self._save(i_step, aux_string = 'encd')
+
+    def train_threshold(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
+        """Train the ProtoNet.
+
+        Consumes dataloader_train to optimize weights of ProtoNetNetwork
+        while periodically validating on dataloader_val, logging metrics, and
+        saving checkpoints.
 
         Args:
-            dataloader_test (DataLoader): loader for test tasks
+            dataloader_train (DataLoader): loader for train tasks
+            dataloader_val (DataLoader): loader for validation tasks
+            writer (SummaryWriter): TensorBoard logger
         """
-        accuracies = []
-        for task_batch in dataloader_test:
-            accuracies.append(self._step(task_batch)[2])
-        mean = np.mean(accuracies)
-        std = np.std(accuracies)
-        mean_95_confidence_interval = 1.96 * std / np.sqrt(NUM_TEST_TASKS)
-        print(
-            f'Accuracy over {NUM_TEST_TASKS} test tasks: '
-            f'mean {mean:.3f}, '
-            f'95% confidence interval {mean_95_confidence_interval:.3f}'
-        )
+        print(f'Starting training at iteration {self._start_train_enc_step}.')
+        for i_step in range(self._start_train_enc_step, num_train_iterations):
+            self.encoder_optimizer.zero_grad()
+            loss_batch = []
+            accuracy_support_batch = []
+            accuracy_query_batch = []
+            for _ in range(batch_size):
+                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(dataloader_train.sample_epsilon())
+                loss_batch.append(loss_task)
+                accuracy_query_batch.append(accuracy_query_task)
+                accuracy_support_batch.append(accuracy_support_task)
+            loss, accuracy_support, accuracy_query = (torch.mean(torch.stack(loss_batch)),
+                                                        np.mean(accuracy_support_batch),
+                                                        np.mean(accuracy_query_batch))
+            loss.backward()
+            self.encoder_optimizer.step()
 
-    def load(self, checkpoint_step):
+            if i_step % PRINT_INTERVAL == 0:
+                print(
+                    f'Iteration {i_step}: '
+                    f'loss: {loss.item():.3f}, '
+                    f'support accuracy: {accuracy_support.item():.3f}, '
+                    f'query accuracy: {accuracy_query.item():.3f}'
+                )
+                writer.add_scalar('loss/train', loss.item(), i_step)
+                writer.add_scalar(
+                    'train_accuracy/support',
+                    accuracy_support.item(),
+                    i_step
+                )
+                writer.add_scalar(
+                    'train_accuracy/query',
+                    accuracy_query.item(),
+                    i_step
+                )
+
+            if i_step % VAL_INTERVAL == 0:
+                with torch.no_grad():
+                    losses, accuracies_support, accuracies_query = [], [], []
+                    for _ in range(4):
+
+                        loss_batch = []
+                        accuracy_support_batch = []
+                        accuracy_query_batch = []
+                        for _ in range(batch_size):
+                            loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_val.sample_epsilon())
+                            loss_batch.append(loss_task)
+                            accuracy_query_batch.append(accuracy_query_task)
+                            accuracy_support_batch.append(accuracy_support_task)
+                        loss, accuracy_support, accuracy_query = (torch.mean(torch.stack(loss_batch)),
+                                                        np.mean(accuracy_support_batch),
+                                                        np.mean(accuracy_query_batch))
+                        losses.append(loss.item())
+                        accuracies_support.append(accuracy_support)
+                        accuracies_query.append(accuracy_query)
+                    loss = np.mean(losses)
+                    accuracy_support = np.mean(accuracies_support)
+                    accuracy_query = np.mean(accuracies_query)
+                print(
+                    f'Validation: '
+                    f'loss: {loss:.3f}, '
+                    f'support accuracy: {accuracy_support:.3f}, '
+                    f'query accuracy: {accuracy_query:.3f}'
+                )
+                writer.add_scalar('loss/val', loss, i_step)
+                writer.add_scalar(
+                    'val_accuracy/support',
+                    accuracy_support,
+                    i_step
+                )
+                writer.add_scalar(
+                    'val_accuracy/query',
+                    accuracy_query,
+                    i_step
+                )
+
+            if i_step % SAVE_INTERVAL == 0:
+                self._save(i_step, aux_string = 'thres')
+################################################ TODO ##############################################
+    # def test(self, dataloader_test):
+    #     """Evaluate the ProtoNet on test tasks.
+
+    #     Args:
+    #         dataloader_test (DataLoader): loader for test tasks
+    #     """
+    #     accuracies = []
+    #     for task_batch in dataloader_test:
+    #         accuracies.append(self._step(task_batch)[2])
+    #     mean = np.mean(accuracies)
+    #     std = np.std(accuracies)
+    #     mean_95_confidence_interval = 1.96 * std / np.sqrt(NUM_TEST_TASKS)
+    #     print(
+    #         f'Accuracy over {NUM_TEST_TASKS} test tasks: '
+    #         f'mean {mean:.3f}, '
+    #         f'95% confidence interval {mean_95_confidence_interval:.3f}'
+    #     )
+
+    def load(self, checkpoint_step, aux_string, num_encoder_train_iterations):
         """Loads a checkpoint.
 
         Args:
@@ -276,20 +366,25 @@ class ProtoNet:
         """
         target_path = (
             f'{os.path.join(self._log_dir, "state")}'
-            f'{checkpoint_step}.pt'
+            f'{aux_string}{checkpoint_step}.pt'
         )
         if os.path.isfile(target_path):
             state = torch.load(target_path)
             self._network.load_state_dict(state['network_state_dict'])
-            self._optimizer.load_state_dict(state['optimizer_state_dict'])
-            self._start_train_step = checkpoint_step + 1
-            print(f'Loaded checkpoint iteration {checkpoint_step}.')
+            self.encoder_optimizer.load_state_dict(state['encoder_optimizer_state_dict'])
+            self.ood_optimizer.load_state_dict(state['ood_optimizer_state_dict'])
+            if aux_string == 'encd':
+                self._start_train_enc_step = checkpoint_step + 1
+            else:
+                self._start_train_enc_step = num_encoder_train_iterations
+                self._start_train_thres_step = checkpoint_step + 1
+            print(f'Loaded checkpoint iteration {aux_string}{checkpoint_step}.')
         else:
             raise ValueError(
                 f'No checkpoint for iteration {checkpoint_step} found.'
             )
 
-    def _save(self, checkpoint_step):
+    def _save(self, checkpoint_step, aux_string=''):
         """Saves network and optimizer state_dicts as a checkpoint.
 
         Args:
@@ -297,8 +392,9 @@ class ProtoNet:
         """
         torch.save(
             dict(network_state_dict=self._network.state_dict(),
-                 optimizer_state_dict=self._optimizer.state_dict()),
-            f'{os.path.join(self._log_dir, "state")}{checkpoint_step}.pt'
+                 encoder_optimizer_state_dict=self.encoder_optimizer.state_dict(),
+                 ood_optimizer_state_dict=self.ood_optimizer.state_dict()),
+            f'{os.path.join(self._log_dir, "state")}{aux_string}{checkpoint_step}.pt'
         )
         print('Saved checkpoint.')
 
@@ -310,84 +406,90 @@ def main(args):
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
 
-    protonet = ProtoNet(args.learning_rate, log_dir)
+    protonet = ProtoNetTrainer(args.learning_rate, log_dir)
 
-    if args.checkpoint_step > -1:
-        protonet.load(args.checkpoint_step)
+    if args.checkpoint_step > -1 and (args.encd_checkpoint ^ args.thresh_checkpoint):
+        protonet.load(args.checkpoint_step, 'encd' if args.encd_checkpoint else 'thres', args.num_encoder_train_iterations)
     else:
         print('Checkpoint loading skipped.')
 
-    if not args.test:
-        num_training_tasks = args.batch_size * (args.num_train_iterations -
-                                                args.checkpoint_step - 1)
-        print(
-            f'Training on tasks with composition '
-            f'num_way={args.num_way}, '
-            f'num_support={args.num_support}, '
-            f'num_query={args.num_query}'
-        )
-        dataloader_train = omniglot.get_omniglot_dataloader(
-            'train',
-            args.batch_size,
-            args.num_way,
-            args.num_support,
-            args.num_query,
-            num_training_tasks
-        )
-        dataloader_val = omniglot.get_omniglot_dataloader(
-            'val',
-            args.batch_size,
-            args.num_way,
-            args.num_support,
-            args.num_query,
-            args.batch_size * 4
-        )
-        protonet.train(
-            dataloader_train,
-            dataloader_val,
-            writer,
-            args.num_train_iterations,
-            args.batch_size
-        )
-    else:
-        print(
-            f'Testing on tasks with composition '
-            f'num_way={args.num_way}, '
-            f'num_support={args.num_support}, '
-            f'num_query={args.num_query}'
-        )
-        dataloader_test = omniglot.get_omniglot_dataloader(
-            'test',
-            1,
-            args.num_way,
-            args.num_support,
-            args.num_query,
-            NUM_TEST_TASKS
-        )
-        protonet.test(dataloader_test)
+    # if not args.test:
+    # num_training_tasks = args.batch_size * (args.num_train_iterations -
+    #                                         args.checkpoint_step - 1)
+    # print(
+    #     f'Training on tasks with composition '
+    #     f'num_way={args.num_way}, '
+    #     f'num_support={args.num_support}, '
+    #     f'num_query={args.num_query}'
+    # )
+    dataloader_train = omniglot.get_omniglot_dataloader(
+        'train',
+        args.batch_size,
+        args.num_way,
+        args.num_support,
+        args.num_query,
+        num_training_tasks
+    )
+    dataloader_val = omniglot.get_omniglot_dataloader(
+        'val',
+        args.batch_size,
+        args.num_way,
+        args.num_support,
+        args.num_query,
+        args.batch_size * 4
+    )
+    protonet.train(
+        dataloader_train,
+        dataloader_val,
+        writer,
+        args.num_train_iterations,
+        args.batch_size
+    )
+    # else:
+    #     print(
+    #         f'Testing on tasks with composition '
+    #         f'num_way={args.num_way}, '
+    #         f'num_support={args.num_support}, '
+    #         f'num_query={args.num_query}'
+    #     )
+    #     dataloader_test = omniglot.get_omniglot_dataloader(
+    #         'test',
+    #         1,
+    #         args.num_way,
+    #         args.num_support,
+    #         args.num_query,
+    #         NUM_TEST_TASKS
+    #     )
+    #     protonet.test(dataloader_test)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Train a ProtoNet!')
     parser.add_argument('--log_dir', type=str, default=None,
                         help='directory to save to or load from')
-    parser.add_argument('--num_way', type=int, default=5,
-                        help='number of classes in a task')
+    # parser.add_argument('--num_way', type=int, default=5,
+    #                     help='number of classes in a task')
     parser.add_argument('--num_support', type=int, default=1,
                         help='number of support examples per class in a task')
     parser.add_argument('--num_query', type=int, default=15,
                         help='number of query examples per class in a task')
-    parser.add_argument('--learning_rate', type=float, default=0.001,
-                        help='learning rate for the network')
+    parser.add_argument('--encoder_learning_rate', type=float, default=0.001,
+                        help='learning rate for the encoder training')
+    parser.add_argument('--threshold_learning_rate', type=float, default=0.001,
+                        help='learning rate for the encoder training')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='number of tasks per outer-loop update')
-    parser.add_argument('--num_train_iterations', type=int, default=5000,
-                        help='number of outer-loop updates to train for')
+    parser.add_argument('--num_encoder_train_iterations', type=int, default=5000,
+                        help='number of outer-loop updates to train the encoder for')
+    parser.add_argument('--num_threshold_train_iterations', type=int, default=5000,
+                        help='number of outer-loop updates to train the threshold for')
     parser.add_argument('--test', default=False, action='store_true',
                         help='train or test')
     parser.add_argument('--checkpoint_step', type=int, default=-1,
                         help=('checkpoint iteration to load for resuming '
                               'training, or for evaluation (-1 is ignored)'))
+    parser.add_argument('--encd_checkpoint', default=False, action='store_true')
+    parser.add_argument('--thresh_checkpoint', default=False, action='store_true')
 
     main_args = parser.parse_args()
     main(main_args)
