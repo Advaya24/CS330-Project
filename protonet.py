@@ -9,12 +9,22 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils import tensorboard
+# from torch.utils.data import DataLoader
+from torchvision import transforms
 
 import util
+from data.cifar100 import CIFARDataset, CIFARData
+from pretraining.networks.resnet_big import SupConResNet
+from tqdm import tqdm
+import time
+
+torch.manual_seed(0)
+torch.cuda.manual_seed(0)
+np.random.seed(0)
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SUMMARY_INTERVAL = 10
-SAVE_INTERVAL = 100
+SAVE_INTERVAL = 50
 PRINT_INTERVAL = 10
 VAL_INTERVAL = PRINT_INTERVAL * 5
 NUM_TEST_TASKS = 600
@@ -93,15 +103,15 @@ class ProtoNetTrainer:
             self._network.encoder.parameters(),
             lr=proto_learning_rate
         )
-        self.ood_optimizer = torch.optim.Adam(
+        self.threshold_optimizer = torch.optim.Adam(
             [self._network.threshold],
             lr=threshold_learning_rate
         )
         self._log_dir = log_dir
         os.makedirs(self._log_dir, exist_ok=True)
 
-        self._start_train_enc_step = 0
-        self._start_train_thres_step = 0
+        self._start_train_enc_step = 1
+        self._start_train_thres_step = 1
 
     def embd_train_step(self, task):
         """Computes ProtoNet mean loss (and accuracy) on a batch of tasks.
@@ -120,26 +130,31 @@ class ProtoNetTrainer:
         images_support = images_support.to(DEVICE)
         labels_support = labels_support.to(DEVICE)
         images_query = images_query.to(DEVICE)
-        labels_query = labels_query.to(DEVICE)
+        labels_query = labels_query.type(torch.LongTensor).to(DEVICE)
+        mask_support = mask_support.to(DEVICE)
         
         num_classes = images_support.shape[0]
         num_support = images_support.shape[1]
 
-        mask_support = torch.reshape(mask_support, (mask_support.shape[0], mask_support[1], 1))
+        mask_support = torch.reshape(mask_support, (mask_support.shape[0], mask_support.shape[1], 1))
 
         latents_support = self._network.embed_forward(torch.reshape(images_support, (-1, images_support.shape[2], images_support.shape[3], images_support.shape[4])))
         latents_query = self._network.embed_forward(torch.reshape(images_query, (-1, images_query.shape[2], images_query.shape[3], images_query.shape[4])))
-        
+
         latents_support_reshaped = torch.reshape(latents_support, (num_classes, num_support, -1))
         prototypes_shuffled = torch.sum(latents_support_reshaped * mask_support, axis = 1) / torch.sum(mask_support, axis = 1)
-        idx = torch.argsort(labels_support)
+        idx = torch.argsort(labels_support.mean(1).int())
         prototypes = prototypes_shuffled[idx]
+        
+        distances_query = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = -1) for x in latents_query])
 
-        distances_query = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = 1) for x in latents_query])
         logits_query = - torch.square(distances_query)
-
-        distances_support = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = 1) for x in latents_support])
+        distances_support = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = -1) for x in latents_support])
         logits_support = - torch.square(distances_support)
+        labels_query = labels_query.reshape(-1, *labels_query.shape[2:])
+        labels_support = labels_support.reshape(-1, *labels_support.shape[2:])
+
+
 
         return (
             F.cross_entropy(logits_query, labels_query),
@@ -153,7 +168,7 @@ class ProtoNetTrainer:
         images_support = images_support.to(DEVICE)
         labels_support = labels_support.to(DEVICE)
         images_query = images_query.to(DEVICE)
-        labels_query = labels_query.to(DEVICE)
+        labels_query = labels_query.float().to(DEVICE)
 
         num_seen_classes = images_support.shape[0]
         num_support = images_support.shape[1]
@@ -165,19 +180,48 @@ class ProtoNetTrainer:
             latents_support_reshaped = torch.reshape(latents_support, (num_seen_classes, num_support, -1))
             prototypes = torch.mean(latents_support_reshaped, 1)
             distances_query = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = 1) for x in latents_query])
-            min_dist_query = torch.min(distances_query, dim = 1)
+            min_dist_query = torch.min(distances_query, dim = 1)[0]
 
             distances_support = torch.stack([torch.linalg.vector_norm(prototypes - x, dim = 1) for x in latents_support])
-            min_dist_support = torch.min(distances_support, dim = 1)
+            min_dist_support = torch.min(distances_support, dim = 1)[0]
+            
+            labels_query = labels_query.reshape(-1, *labels_query.shape[2:])
+            labels_support = labels_support.reshape(-1, *labels_support.shape[2:])
         
-        prob_ood_query = F.sigmoid(min_dist_query - self._network.ood_forward())
-        prob_ood_support = F.sigmoid(min_dist_support - self._network.ood_forward())
+        prob_ood_query = torch.sigmoid(min_dist_query - self._network.ood_forward())
+        prob_ood_support = torch.sigmoid(min_dist_support - self._network.ood_forward())
 
-        return (F.binary_cross_entropy(prob_ood_query, labels_query),
+        return (F.binary_cross_entropy_with_logits(min_dist_query - self._network.ood_forward(), labels_query, pos_weight=torch.tensor(6.0/4)),
         util.bin_score(prob_ood_support, labels_support),
         util.bin_score(prob_ood_query, labels_query)
         )
 
+    def train(self, dataloader_train, dataloader_val, writer, args):
+        # train encoder
+        # print("===========================")
+        # print("     Training Encoder:")
+        # print("===========================")
+        dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
+
+        # train epsilon
+        print("===========================")
+        print("     Training Epsilon:")
+        print("===========================")
+        dataloader_train.dataset.switch_to_epsilon(args.num_support_epsilon, args.num_query_epsilon, args.seen_unseen_split)
+        dataloader_val.dataset.switch_to_epsilon(args.num_support_epsilon, args.num_query_epsilon, args.seen_unseen_split)
+        self.train_threshold(dataloader_train, dataloader_val, writer, args.num_threshold_train_iterations, args.batch_size)
+
+        # calculate and store prototypes
+        print("===========================")
+        print("  Calculating Prototypes:")
+        print("===========================")
+        dataloader_train.collate_fn = torch.utils.data.default_collate
+        dataloader_train.dataset.switch_to_default()
+        dataloader_val.collate_fn = torch.utils.data.default_collate
+        dataloader_val.dataset.switch_to_default()
+        self.calculate_prototypes(dataloader_train)
 
     def train_encoder(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
         """Train the ProtoNet.
@@ -192,13 +236,18 @@ class ProtoNetTrainer:
             writer (SummaryWriter): TensorBoard logger
         """
         print(f'Starting training at iteration {self._start_train_enc_step}.')
-        for i_step in range(self._start_train_enc_step, num_train_iterations):
+        for i_step in tqdm(range(self._start_train_enc_step, num_train_iterations+1)):
             self.encoder_optimizer.zero_grad()
             loss_batch = []
             accuracy_support_batch = []
             accuracy_query_batch = []
-            for _ in range(batch_size):
-                loss_task, accuracy_support_task, accuracy_query_task = self.embd_train_step(dataloader_train.sample_novel_cls())
+            # data_start = time.time()
+            task_batch = next(iter(dataloader_train))
+            # print(f'Data time: {time.time() - data_start}')
+            for task in task_batch:
+                # step_start = time.time()
+                loss_task, accuracy_support_task, accuracy_query_task = self.embd_train_step(task)
+                # print(f'Step time: {time.time() - step_start}')
                 loss_batch.append(loss_task)
                 accuracy_query_batch.append(accuracy_query_task)
                 accuracy_support_batch.append(accuracy_support_task)
@@ -235,8 +284,9 @@ class ProtoNetTrainer:
                         loss_batch = []
                         accuracy_support_batch = []
                         accuracy_query_batch = []
-                        for _ in range(batch_size):
-                            loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_val.sample_novel_cls())
+                        task_batch = next(iter(dataloader_val))
+                        for task in task_batch:
+                            loss_task, accuracy_support_task, accuracy_query_task = self.embd_train_step(task)
                             loss_batch.append(loss_task)
                             accuracy_query_batch.append(accuracy_query_task)
                             accuracy_support_batch.append(accuracy_support_task)
@@ -283,13 +333,18 @@ class ProtoNetTrainer:
             writer (SummaryWriter): TensorBoard logger
         """
         print(f'Starting training at iteration {self._start_train_enc_step}.')
-        for i_step in range(self._start_train_enc_step, num_train_iterations):
+        for i_step in tqdm(range(self._start_train_enc_step, num_train_iterations+1)):
             self.encoder_optimizer.zero_grad()
             loss_batch = []
             accuracy_support_batch = []
             accuracy_query_batch = []
-            for _ in range(batch_size):
-                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(dataloader_train.sample_epsilon())
+            # data_start = time.time()
+            task_batch = next(iter(dataloader_train))
+            # print(f'Data time: {time.time() - data_start}')
+            for task in task_batch:
+                # step_start = time.time()
+                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task)
+                # print(f'Step time: {time.time() - step_start}')
                 loss_batch.append(loss_task)
                 accuracy_query_batch.append(accuracy_query_task)
                 accuracy_support_batch.append(accuracy_support_task)
@@ -297,7 +352,7 @@ class ProtoNetTrainer:
                                                         np.mean(accuracy_support_batch),
                                                         np.mean(accuracy_query_batch))
             loss.backward()
-            self.encoder_optimizer.step()
+            self.threshold_optimizer.step()
 
             if i_step % PRINT_INTERVAL == 0:
                 print(
@@ -326,8 +381,9 @@ class ProtoNetTrainer:
                         loss_batch = []
                         accuracy_support_batch = []
                         accuracy_query_batch = []
-                        for _ in range(batch_size):
-                            loss_task, accuracy_support_task, accuracy_query_task = self._step(dataloader_val.sample_epsilon())
+                        task_batch = next(iter(dataloader_val))
+                        for task in task_batch:
+                            loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task)
                             loss_batch.append(loss_task)
                             accuracy_query_batch.append(accuracy_query_task)
                             accuracy_support_batch.append(accuracy_support_task)
@@ -396,7 +452,7 @@ class ProtoNetTrainer:
             state = torch.load(target_path)
             self._network.load_state_dict(state['network_state_dict'])
             self.encoder_optimizer.load_state_dict(state['encoder_optimizer_state_dict'])
-            self.ood_optimizer.load_state_dict(state['ood_optimizer_state_dict'])
+            self.threshold_optimizer.load_state_dict(state['threshold_optimizer_state_dict'])
             if aux_string == 'encd':
                 self._start_train_enc_step = checkpoint_step + 1
             else:
@@ -417,7 +473,7 @@ class ProtoNetTrainer:
         torch.save(
             dict(network_state_dict=self._network.state_dict(),
                  encoder_optimizer_state_dict=self.encoder_optimizer.state_dict(),
-                 ood_optimizer_state_dict=self.ood_optimizer.state_dict()),
+                 threshold_optimizer_state_dict=self.threshold_optimizer.state_dict()),
             f'{os.path.join(self._log_dir, "state")}{aux_string}{checkpoint_step}.pt'
         )
         print('Saved checkpoint.')
@@ -446,77 +502,67 @@ class ProtoNetTrainer:
 def main(args):
     log_dir = args.log_dir
     if log_dir is None:
-        log_dir = f'./logs/protonet/omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.lr:{args.learning_rate}.batch_size:{args.batch_size}'  # pylint: disable=line-too-long
+        log_dir = f'./logs/protonet/cifar{args.num_way}.' \
+            f'support_eps:{args.num_support_epsilon}.query_eps:{args.num_query_epsilon}.'\
+            f'support_novel:{args.num_support_novel}.query_novel:{args.num_query_novel}.'\
+            f'eps_lr:{args.threshold_learning_rate}.novel_lr:{args.encoder_learning_rate}.'\
+            f'batch_size:{args.batch_size}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
 
-    protonet = ProtoNetTrainer(args.learning_rate, log_dir)
+    encoder = SupConResNet(args.model, feat_dim=args.feature_dim)
+    encoder.load_state_dict(torch.load(args.encoder_path)['model'])
+    protonet = ProtoNetTrainer(encoder, args.encoder_learning_rate, args.threshold_learning_rate, log_dir)
 
     if args.checkpoint_step > -1 and (args.encd_checkpoint ^ args.thresh_checkpoint):
         protonet.load(args.checkpoint_step, 'encd' if args.encd_checkpoint else 'thres', args.num_encoder_train_iterations)
     else:
         print('Checkpoint loading skipped.')
 
-    # if not args.test:
-    # num_training_tasks = args.batch_size * (args.num_train_iterations -
-    #                                         args.checkpoint_step - 1)
-    # print(
-    #     f'Training on tasks with composition '
-    #     f'num_way={args.num_way}, '
-    #     f'num_support={args.num_support}, '
-    #     f'num_query={args.num_query}'
-    # )
-    dataloader_train = omniglot.get_omniglot_dataloader(
-        'train',
-        args.batch_size,
-        args.num_way,
-        args.num_support,
-        args.num_query,
-        num_training_tasks
-    )
-    dataloader_val = omniglot.get_omniglot_dataloader(
-        'val',
-        args.batch_size,
-        args.num_way,
-        args.num_support,
-        args.num_query,
-        args.batch_size * 4
-    )
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2023, 0.1994, 0.2010)
+    normalize = transforms.Normalize(mean=mean, std=std)
+
+    train_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomApply([
+            transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+        ], p=0.8),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.ToTensor(),
+        normalize,
+    ])
+    dataset_train = CIFARDataset('data/cifar10-dataset', 'seen', 'train', transform=train_transform)
+    dataloader_train = torch.utils.data.DataLoader(dataset_train, batch_size=args.batch_size, num_workers=0, collate_fn=lambda x: x, pin_memory=torch.cuda.is_available())
+    dataset_val_seen = CIFARDataset('data/cifar10-dataset', 'seen', 'val', transform=train_transform)
+    dataloader_val_seen = torch.utils.data.DataLoader(dataset_val_seen, batch_size=args.batch_size, num_workers=0, collate_fn=lambda x: x, pin_memory=torch.cuda.is_available())
     protonet.train(
         dataloader_train,
-        dataloader_val,
+        dataloader_val_seen,
         writer,
-        args.num_train_iterations,
-        args.batch_size
+        args
     )
-    # else:
-    #     print(
-    #         f'Testing on tasks with composition '
-    #         f'num_way={args.num_way}, '
-    #         f'num_support={args.num_support}, '
-    #         f'num_query={args.num_query}'
-    #     )
-    #     dataloader_test = omniglot.get_omniglot_dataloader(
-    #         'test',
-    #         1,
-    #         args.num_way,
-    #         args.num_support,
-    #         args.num_query,
-    #         NUM_TEST_TASKS
-    #     )
-    #     protonet.test(dataloader_test)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Train a ProtoNet!')
     parser.add_argument('--log_dir', type=str, default=None,
                         help='directory to save to or load from')
-    # parser.add_argument('--num_way', type=int, default=5,
-    #                     help='number of classes in a task')
-    parser.add_argument('--num_support', type=int, default=1,
-                        help='number of support examples per class in a task')
-    parser.add_argument('--num_query', type=int, default=15,
-                        help='number of query examples per class in a task')
+    parser.add_argument('--num_way', type=int, default=10,
+                        help='number of classes in a task')
+    parser.add_argument('--num_support_epsilon', type=int, default=5,
+                        help='number of support examples per class in epsilon task')
+    parser.add_argument('--num_support_novel', type=int, default=5,
+                        help='number of support examples per class in novel class task')
+    parser.add_argument('--num_query_epsilon', type=int, default=15,
+                        help='number of query examples per class in epsilon task')
+    parser.add_argument('--num_query_novel', type=int, default=15,
+                        help='number of query examples per class in novel task')
+    parser.add_argument('--seen_unseen_split', type=float, default=4/6)
+    parser.add_argument('--num_shots_novel', type=int, default=1,
+                        help='Number of support examples of "unseen" classes')
     parser.add_argument('--encoder_learning_rate', type=float, default=0.001,
                         help='learning rate for the encoder training')
     parser.add_argument('--threshold_learning_rate', type=float, default=0.001,
@@ -534,6 +580,9 @@ if __name__ == '__main__':
                               'training, or for evaluation (-1 is ignored)'))
     parser.add_argument('--encd_checkpoint', default=False, action='store_true')
     parser.add_argument('--thresh_checkpoint', default=False, action='store_true')
+    parser.add_argument('--encoder_path', type=str, default='save/SupCon/cifar100_models/SupCon_cifar10_resnet18_lr_0.5_decay_0.0001_bsz_2048_temp_0.1_embdim_2048_trial_0_partition_train_data/cifar10-dataset_cosine_warm/ckpt_epoch_100.pth')
+    parser.add_argument('--model', type=str, default='resnet18')
+    parser.add_argument('--feature_dim', type=int, default=2048)
 
     main_args = parser.parse_args()
     main(main_args)

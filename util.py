@@ -20,9 +20,9 @@ def score(logits, labels):
     return torch.mean(y).item()
 
 def bin_score(prob, labels):
-    assert prob.dim() == 2
+    assert prob.dim() == 1
     assert labels.dim() == 1
     assert prob.shape[0] == labels.shape[0]
-    y = torch.round(prob, dim=-1) == labels
+    y = torch.round(prob) == labels
     y = y.type(torch.float)
     return torch.mean(y).item()

@@ -105,14 +105,22 @@ class CIFARDataset(Dataset):
         self.transform = transform
         self.unique_labels = np.unique(self.labels)
         self.image_shape = self.images[0].shape
+        self._is_epsilon = False
+        self._is_novel = False
+        self.image_type = self.images[0].dtype
 
     
     def __getitem__(self, index):
-        img = self.images[index]
-        label = np.array([self.labels[index]])
-        if self.transform is not None:
-            img = self.transform(img)
-        return img, label
+        if self._is_epsilon:
+            return self.sample_epsilon(self._epsilon_support_size, self._epsilon_query_size, self._epsilon_split)
+        elif self._is_novel:
+            return self.sample_novel_cls(self._novel_support_size, self._num_novels_in_support, self._novel_query_size, self._novel_split)
+        else:
+            img = self.images[index]
+            label = np.array([self.labels[index]])
+            if self.transform is not None:
+                img = self.transform(img)
+            return img, label
     
     def __len__(self):
         return self.images.shape[0]
@@ -129,11 +137,11 @@ class CIFARDataset(Dataset):
             out_labels[i] = lab
         return out_images, out_labels
 
-    def sample_epsilon(self, support_size=5, query_size=1, split=4/6):
+    def sample_epsilon(self, support_size=5, query_size=15, split=4/6):
         unique_labels = self.unique_labels
         image_shape = self.image_shape
         support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
-        support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
+        support_images = np.zeros((support_classes.shape[0], support_size, *image_shape), dtype=self.image_type)
         support_labels = np.zeros((support_classes.shape[0], support_size))
         for i, lab in enumerate(support_classes):
             idx = np.where(self.labels == lab)[0]
@@ -142,7 +150,7 @@ class CIFARDataset(Dataset):
             support_labels[i] = 0
 
         ood_classes = np.setdiff1d(unique_labels, support_classes)
-        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
+        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape), dtype=self.image_type)
         query_labels = np.zeros((unique_labels.shape[0], query_size))
 
         for i, lab in enumerate(unique_labels):
@@ -151,9 +159,18 @@ class CIFARDataset(Dataset):
             query_images[i] = self.images[k_idx]
             query_labels[i] = lab in ood_classes
 
-        return support_images, support_labels, query_images, query_labels
+        support_images = self.transform_batch(support_images.reshape(-1, *image_shape)).reshape(*support_images.shape[:2], *image_shape[::-1])
+        query_images = self.transform_batch(query_images.reshape(-1, *image_shape)).reshape(*query_images.shape[:2], *image_shape[::-1])
 
-    def sample_novel_cls(self, support_size=5, num_novels_in_support=1, query_size=1, split=4/6):
+        return support_images, torch.tensor(support_labels), query_images, torch.tensor(query_labels)
+
+    def transform_batch(self, images):
+        out_images = []
+        for image in images:
+            out_images.append(self.transform(image))
+        return torch.stack(out_images)
+
+    def sample_novel_cls(self, support_size=5, num_novels_in_support=1, query_size=15, split=4/6):
         """
         Note: this currently only works for class labels starting from 0.
         labels will look like this: 
@@ -167,8 +184,8 @@ class CIFARDataset(Dataset):
         """
         unique_labels = self.unique_labels
         image_shape = self.images[0].shape
-        support_images = np.zeros((unique_labels.shape[0], support_size, *image_shape))
-        support_labels = np.zeros((unique_labels.shape[0]))
+        support_images = np.zeros((unique_labels.shape[0], support_size, *image_shape), dtype=self.image_type)
+        support_labels = np.zeros((unique_labels.shape[0], support_size))
         mappings = np.random.permutation(unique_labels)
         for i, lab in enumerate(unique_labels):
             idx = np.where(self.labels == lab)[0]
@@ -181,17 +198,39 @@ class CIFARDataset(Dataset):
         support_mask = np.ones((unique_labels.shape[0], support_size, 1, 1, 1))
         support_mask[mask_row_idx, num_novels_in_support:] = 0
 
-        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
-        query_labels = np.zeros((unique_labels.shape[0]))
+        query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape), dtype=self.image_type)
+        query_labels = np.zeros((unique_labels.shape[0], query_size))
 
         for i, lab in enumerate(unique_labels):
             idx = np.where(self.labels == lab)[0]
             k_idx = np.random.choice(idx, query_size)
             query_images[i] = self.images[k_idx]
             query_labels[i] = mappings[lab]
+        
 
-        return support_images, support_labels, support_mask, query_images, query_labels
+        support_images = self.transform_batch(support_images.reshape(-1, *image_shape)).reshape(*support_images.shape[:2], *image_shape[::-1])
+        query_images = self.transform_batch(query_images.reshape(-1, *image_shape)).reshape(*query_images.shape[:2], *image_shape[::-1])
 
+        return support_images, torch.tensor(support_labels), torch.tensor(support_mask), query_images, torch.tensor(query_labels)
+    
+    def switch_to_epsilon(self, support_size=5, query_size=15, split=4/6):
+        self._is_epsilon = True
+        self._is_novel = False
+        self._epsilon_support_size = support_size
+        self._epsilon_query_size = query_size
+        self._epsilon_split = split
+    
+    def switch_to_novel(self, support_size=5, num_novels_in_support=1, query_size=15, split=4/6):
+        self._is_epsilon = False
+        self._is_novel = True
+        self._novel_support_size = support_size
+        self._num_novels_in_support = num_novels_in_support
+        self._novel_query_size = query_size
+        self._novel_split = split
+
+    def switch_to_default(self):
+        self._is_epsilon = False
+        self._is_novel = False
 
 
 if __name__ == '__main__':

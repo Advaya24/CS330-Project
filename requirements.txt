@@ -5,3 +5,4 @@ torchaudio
 numpy
 tensorboard_logger
 protobuf==3.20.*
+tqdm

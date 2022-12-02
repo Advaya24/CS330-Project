@@ -19,13 +19,13 @@ from data.cifar100 import CIFARDataset
 from data.cifar100 import CIFARData
 from pretraining.losses import SupConLoss
 
-try:
-    import apex
-    from apex import amp, optimizers
-except ImportError:
-    pass
+# try:
+#     import apex
+#     from apex import amp, optimizers
+# except ImportError:
+#     pass
 
-
+torch.autograd.set_detect_anomaly(True)
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
@@ -81,6 +81,8 @@ def parse_option():
     parser.add_argument('--trial', type=str, default='0',
                         help='id for recording multiple runs')
     parser.add_argument('--saved_epoch', type=int, default=-1, help='parameter to specify which epoch to resume training from')
+    parser.add_argument('--partition', default='train')
+    parser.add_argument('--data_root', type=str, default='data/cifar10-dataset')
 
     opt = parser.parse_args()
 
@@ -101,9 +103,9 @@ def parse_option():
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_{}_lr_{}_decay_{}_bsz_{}_temp_{}_embdim_{}_trial_{}'.\
-        format('SupCon', 'cifar100', opt.model, opt.learning_rate,
-               opt.weight_decay, opt.batch_size, opt.temp, opt.embedding_dim, opt.trial)
+    opt.model_name = '{}_{}_{}_lr_{}_decay_{}_bsz_{}_temp_{}_embdim_{}_trial_{}_partition_{}_{}'.\
+        format('SupCon', 'cifar10', opt.model, opt.learning_rate,
+               opt.weight_decay, opt.batch_size, opt.temp, opt.embedding_dim, opt.trial, opt.partition, opt.data_root)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
@@ -174,9 +176,9 @@ def set_loader(opt):
     # else:
     #     raise ValueError(opt.dataset)
 
-    train_dataset = CIFARDataset(root = 'data/cifar-dataset', 
+    train_dataset = CIFARDataset(root = opt.data_root, 
                                 class_partition='seen',
-                                partition='train', 
+                                partition=opt.partition, 
                                 transform=TwoCropTransform(train_transform))
 
     train_sampler = None
@@ -225,12 +227,13 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
         # warm-up learning rate
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
-
+        # with torch.set_grad_enabled(True):
         # compute loss
         features = model(images)
         f1, f2 = torch.split(features, [bsz, bsz], dim=0)
         features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
         # if opt.method == 'SupCon':
+        # loss = criterion(features, labels) / accum_iter
         loss = criterion(features, labels)
         # elif opt.method == 'SimCLR':
         #     loss = criterion(features)
@@ -242,6 +245,9 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         losses.update(loss.item(), bsz)
 
         # SGD
+        # if ((idx + 1) % accum_iter == 0 or (idx + 1 == len(train_loader))):
+        # print(images.shape, labels.shape)
+        # gc(images, labels)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -274,6 +280,7 @@ def main():
 
     # build optimizer
     optimizer = set_optimizer(opt, model)
+
 
     # tensorboard
     logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
