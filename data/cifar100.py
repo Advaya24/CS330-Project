@@ -104,6 +104,7 @@ class CIFARDataset(Dataset):
             self.labels = dataset.targets
         self.transform = transform
         self.unique_labels = np.unique(self.labels)
+        self.image_shape = self.images[0].shape
 
     
     def __getitem__(self, index):
@@ -118,7 +119,7 @@ class CIFARDataset(Dataset):
 
     def sample_k_images_per_target(self, k: int=1):
         unique_labels = self.unique_labels
-        image_shape = self.images[0].shape
+        image_shape = self.image_shape
         out_images = np.zeros((unique_labels.shape[0], k, *image_shape))
         out_labels = np.zeros((unique_labels.shape[0], k))
         for i, lab in enumerate(unique_labels):
@@ -130,7 +131,7 @@ class CIFARDataset(Dataset):
 
     def sample_epsilon(self, support_size=5, query_size=1, split=4/6):
         unique_labels = self.unique_labels
-        image_shape = self.images[0].shape
+        image_shape = self.image_shape
         support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
         support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
         support_labels = np.zeros((support_classes.shape[0], support_size))

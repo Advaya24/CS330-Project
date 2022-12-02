@@ -24,13 +24,15 @@ NUM_TEST_TASKS = 600
 class ProtoNetNetwork(nn.Module):
     """Container for ProtoNet weights and image-to-latent computation and the threshold for ood detection."""
 
-    def __init__(self, pre_trained_encoder):
+    def __init__(self, pre_trained_encoder, prototypes=None, prototype_labels=None):
         """Inits ProtoNetNetwork.
         """
         super().__init__()
         self.encoder = pre_trained_encoder
         self.threshold = torch.nn.Parameter(torch.randn(1))
         self.to(DEVICE)
+        self._prototypes = prototypes
+        self._prototype_labels = prototype_labels
 
     def embed_forward(self, images):
         """Computes the latent representation of a batch of images.
@@ -50,6 +52,28 @@ class ProtoNetNetwork(nn.Module):
 
     def forward(self, images):
         return self.embed_forward(images), self.ood_forward()
+    
+    def add_prototypes(self, prototypes, labels):
+        """
+        Take given prototypes and add them to the existing prototype array. Requires resizing.
+        Precondition: labels are disjoin from self._prototype_labels
+        """
+        if self._prototypes is None:
+            # create new prototype array
+            self._prototypes = prototypes
+            self._prototype_labels = labels
+        else:
+            old_shape_0 = self._prototypes.shape[0]
+            new_shape_0 = old_shape_0 + labels.shape[0]
+            new_prototypes = torch.zeros((new_shape_0, self._prototypes.shape[1]))
+            new_labels = torch.zeros(new_shape_0)
+            new_prototypes[:old_shape_0] = self._prototypes
+            new_prototypes[old_shape_0:] = prototypes
+            new_labels[:old_shape_0] = self._prototype_labels
+            new_labels[old_shape_0:] = labels
+            self._prototypes = new_prototypes
+            self._prototype_labels = new_labels
+
 
     
 
@@ -301,6 +325,26 @@ class ProtoNet:
             f'{os.path.join(self._log_dir, "state")}{checkpoint_step}.pt'
         )
         print('Saved checkpoint.')
+    
+    def calculate_prototypes(self, dataloader):
+        self._network.eval()
+        with torch.no_grad():
+            unique_labels = dataloader.dataset.unique_labels
+            image_shape = np.flip(dataloader.dataset.image_shape)
+            emb_dim = self._network.encoder(torch.randn((1, *image_shape), device=DEVICE)).shape[-1]
+            prototypes = torch.zeros((unique_labels.shape[0], emb_dim), device=DEVICE)
+            labels = torch.tensor(unique_labels, device=DEVICE)
+            counts = torch.zeros_like(labels, dtype=int, device=DEVICE)
+            for batch_images, batch_labels in dataloader:
+                batch_images = batch_images.to(DEVICE)
+                batch_labels = batch_labels.to(DEVICE)
+                encs = self._network.encoder(batch_images)
+                idx = labels.unsqueeze(0) == batch_labels
+                idx = idx.int().argmax(1)
+                prototypes.index_put_((idx,), encs, accumulate=True)
+                counts.put_(idx, torch.ones_like(idx), accumulate=True)
+            self._network.add_prototypes(prototypes/counts.unsqueeze(1), labels)
+
 
 
 def main(args):
@@ -391,3 +435,10 @@ if __name__ == '__main__':
 
     main_args = parser.parse_args()
     main(main_args)
+
+
+"""
+d = CIFARDataset(root='data/cifar10-dataset', class_partition='seen', partition='train', transform=train_transform)
+trainer.calculate_prototypes(dl)
+dl = DataLoader(d, batch_size=128, num_workers=12)
+"""
