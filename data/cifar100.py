@@ -103,6 +103,7 @@ class CIFARDataset(Dataset):
             self.images = dataset.data
             self.labels = dataset.targets
         self.transform = transform
+        self.unique_labels = np.unique(self.labels)
 
     
     def __getitem__(self, index):
@@ -116,7 +117,7 @@ class CIFARDataset(Dataset):
         return self.images.shape[0]
 
     def sample_k_images_per_target(self, k: int=1):
-        unique_labels = np.unique(self.labels)
+        unique_labels = self.unique_labels
         image_shape = self.images[0].shape
         out_images = np.zeros((unique_labels.shape[0], k, *image_shape))
         out_labels = np.zeros((unique_labels.shape[0], k))
@@ -128,12 +129,12 @@ class CIFARDataset(Dataset):
         return out_images, out_labels
 
     def sample_epsilon(self, support_size=5, query_size=1, split=4/6):
-        unique_labels = np.unique(self.labels)
+        unique_labels = self.unique_labels
         image_shape = self.images[0].shape
         support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
         support_images = np.zeros((support_classes.shape[0], support_size, *image_shape))
         support_labels = np.zeros((support_classes.shape[0], support_size))
-        for i, lab in enumerate(np.random.permutation(support_classes)):
+        for i, lab in enumerate(support_classes):
             idx = np.where(self.labels == lab)[0]
             k_idx = np.random.choice(idx, support_size)
             support_images[i] = self.images[k_idx]
@@ -143,7 +144,7 @@ class CIFARDataset(Dataset):
         query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
         query_labels = np.zeros((unique_labels.shape[0], query_size))
 
-        for i, lab in enumerate(np.random.permutation(unique_labels)):
+        for i, lab in enumerate(unique_labels):
             idx = np.where(self.labels == lab)[0]
             k_idx = np.random.choice(idx, query_size)
             query_images[i] = self.images[k_idx]
@@ -153,7 +154,7 @@ class CIFARDataset(Dataset):
 
     def sample_novel_cls(self, support_size=5, num_novels_in_support=1, query_size=1, split=4/6):
         """
-        Note: this only works for class labels starting from 0.
+        Note: this currently only works for class labels starting from 0.
         labels will look like this: 
         array([2., 3., 0., 5., 1., 4.])
 
@@ -163,12 +164,12 @@ class CIFARDataset(Dataset):
         ii) idx = np.argsort(support_labels)
         iii) prototypes = prototypes_shuffled[idx]
         """
-        unique_labels = np.unique(self.labels)
+        unique_labels = self.unique_labels
         image_shape = self.images[0].shape
         support_images = np.zeros((unique_labels.shape[0], support_size, *image_shape))
         support_labels = np.zeros((unique_labels.shape[0]))
         mappings = np.random.permutation(unique_labels)
-        for i, lab in enumerate(np.random.permutation(unique_labels)):
+        for i, lab in enumerate(unique_labels):
             idx = np.where(self.labels == lab)[0]
             k_idx = np.random.choice(idx, support_size)
             support_images[i] = self.images[k_idx]
@@ -182,7 +183,7 @@ class CIFARDataset(Dataset):
         query_images = np.zeros((unique_labels.shape[0], query_size, *image_shape))
         query_labels = np.zeros((unique_labels.shape[0]))
 
-        for i, lab in enumerate(np.random.permutation(unique_labels)):
+        for i, lab in enumerate(unique_labels):
             idx = np.where(self.labels == lab)[0]
             k_idx = np.random.choice(idx, query_size)
             query_images[i] = self.images[k_idx]
