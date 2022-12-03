@@ -162,7 +162,7 @@ class ProtoNetTrainer:
         return (
             F.cross_entropy(logits_query, labels_query),
             util.score(logits_support, labels_support),
-            util.score(logits_query, labels_query, print_=True)
+            util.score(logits_query, labels_query, print_=False)
         )
 
     def threshold_train_step(self, task, print_=False):
@@ -201,12 +201,12 @@ class ProtoNetTrainer:
 
     def train(self, dataloader_train, dataloader_val, writer, args):
         # train encoder
-        # print("===========================")
-        # print("     Training Encoder:")
-        # print("===========================")
-        # dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        # dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        # self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
+        print("===========================")
+        print("     Training Encoder:")
+        print("===========================")
+        dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
 
         # train epsilon
         print("===========================")
@@ -336,7 +336,7 @@ class ProtoNetTrainer:
             dataloader_val (DataLoader): loader for validation tasks
             writer (SummaryWriter): TensorBoard logger
         """
-        print(f'Starting training at iteration {self._start_train_enc_step}.')
+        print(f'Starting training at iteration {self._start_train_thres_step}.')
         for i_step in tqdm(range(self._start_train_thres_step, num_train_iterations+1)):
             self.encoder_optimizer.zero_grad()
             loss_batch = []
@@ -460,7 +460,7 @@ class ProtoNetTrainer:
             if aux_string == 'encd':
                 self._start_train_enc_step = checkpoint_step + 1
             else:
-                self._start_train_enc_step = num_encoder_train_iterations
+                self._start_train_enc_step = num_encoder_train_iterations + 1
                 self._start_train_thres_step = checkpoint_step + 1
             print(f'Loaded checkpoint iteration {aux_string}{checkpoint_step}.')
         else:
@@ -505,14 +505,14 @@ class ProtoNetTrainer:
 
 def main(args):
     log_dir = args.log_dir
-    log_dir = '/home/advaya/CS330-Project/logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
+    # log_dir = '/home/advaya/CS330-Project/logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
     if log_dir is None:
         log_dir = f'./logs/protonet/cifar{args.num_way}.' \
             f'support_eps:{args.num_support_epsilon}.query_eps:{args.num_query_epsilon}.'\
             f'support_novel:{args.num_support_novel}.query_novel:{args.num_query_novel}.'\
             f'eps_lr:{args.threshold_learning_rate}.novel_lr:{args.encoder_learning_rate}.'\
             f'eps_iters:{args.num_threshold_train_iterations}.novel_lr:{args.num_encoder_train_iterations}.'\
-            f'batch_size:{args.batch_size}'  # pylint: disable=line-too-long
+            f'batch_size:{args.batch_size}.pretrained:{args.pretrained}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
 
@@ -590,7 +590,7 @@ if __name__ == '__main__':
     parser.add_argument('--encoder_path', type=str, default='save/SupCon/cifar100_models/SupCon_cifar10_resnet18_lr_0.5_decay_0.0001_bsz_2048_temp_0.1_embdim_2048_trial_0_partition_train_data/cifar10-dataset_cosine_warm/ckpt_epoch_100.pth')
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--feature_dim', type=int, default=2048)
-    parser.add_argument('--pretrained', type=bool, default=True)
+    parser.add_argument('--pretrained', default=True, action='store_false')
 
     main_args = parser.parse_args()
     main(main_args)
