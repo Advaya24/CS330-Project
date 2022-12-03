@@ -24,7 +24,8 @@ np.random.seed(0)
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SUMMARY_INTERVAL = 10
-SAVE_INTERVAL = 50
+ENC_SAVE_INTERVAL = 250
+THRESHOLD_SAVE_INTERVAL = 50
 PRINT_INTERVAL = 10
 VAL_INTERVAL = PRINT_INTERVAL * 5
 NUM_TEST_TASKS = 600
@@ -72,16 +73,18 @@ class ProtoNetNetwork(nn.Module):
             self._prototypes = prototypes
             self._prototype_labels = labels
         else:
-            old_shape_0 = self._prototypes.shape[0]
-            new_shape_0 = old_shape_0 + labels.shape[0]
-            new_prototypes = torch.zeros((new_shape_0, self._prototypes.shape[1]))
-            new_labels = torch.zeros(new_shape_0)
-            new_prototypes[:old_shape_0] = self._prototypes
-            new_prototypes[old_shape_0:] = prototypes
-            new_labels[:old_shape_0] = self._prototype_labels
-            new_labels[old_shape_0:] = labels
-            self._prototypes = new_prototypes
-            self._prototype_labels = new_labels
+            # old_shape_0 = self._prototypes.shape[0]
+            # new_shape_0 = old_shape_0 + labels.shape[0]
+            # new_prototypes = torch.zeros((new_shape_0, self._prototypes.shape[1]))
+            # new_labels = torch.zeros(new_shape_0)
+            # new_prototypes[:old_shape_0] = self._prototypes
+            # new_prototypes[old_shape_0:] = prototypes
+            # new_labels[:old_shape_0] = self._prototype_labels
+            # new_labels[old_shape_0:] = labels
+            # self._prototypes = new_prototypes
+            # self._prototype_labels = new_labels
+            self._prototypes = torch.cat((self._prototypes, prototypes), dim=0)
+            self._labels = torch.cat((self._prototype_labels, labels), dim=0)
 
 
     
@@ -159,10 +162,10 @@ class ProtoNetTrainer:
         return (
             F.cross_entropy(logits_query, labels_query),
             util.score(logits_support, labels_support),
-            util.score(logits_query, labels_query)
+            util.score(logits_query, labels_query, print_=True)
         )
 
-    def threshold_train_step(self, task):
+    def threshold_train_step(self, task, print_=False):
 
         images_support, labels_support, images_query, labels_query = task
         images_support = images_support.to(DEVICE)
@@ -193,7 +196,7 @@ class ProtoNetTrainer:
 
         return (F.binary_cross_entropy_with_logits(min_dist_query - self._network.ood_forward(), labels_query, pos_weight=torch.tensor(6.0/4)),
         util.bin_score(prob_ood_support, labels_support),
-        util.bin_score(prob_ood_query, labels_query)
+        util.bin_score(prob_ood_query, labels_query, print_)
         )
 
     def train(self, dataloader_train, dataloader_val, writer, args):
@@ -201,9 +204,9 @@ class ProtoNetTrainer:
         # print("===========================")
         # print("     Training Encoder:")
         # print("===========================")
-        dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
+        # dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        # dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        # self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
 
         # train epsilon
         print("===========================")
@@ -222,6 +225,7 @@ class ProtoNetTrainer:
         dataloader_val.collate_fn = torch.utils.data.default_collate
         dataloader_val.dataset.switch_to_default()
         self.calculate_prototypes(dataloader_train)
+        self._save('', 'prototypes')
 
     def train_encoder(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
         """Train the ProtoNet.
@@ -257,23 +261,23 @@ class ProtoNetTrainer:
             loss.backward()
             self.encoder_optimizer.step()
 
+            writer.add_scalar('enc_loss/train', loss.item(), i_step)
+            writer.add_scalar(
+                'enc_train_accuracy/support',
+                accuracy_support.item(),
+                i_step
+            )
+            writer.add_scalar(
+                'enc_train_accuracy/query',
+                accuracy_query.item(),
+                i_step
+            )
             if i_step % PRINT_INTERVAL == 0:
                 print(
                     f'Iteration {i_step}: '
                     f'loss: {loss.item():.3f}, '
                     f'support accuracy: {accuracy_support.item():.3f}, '
                     f'query accuracy: {accuracy_query.item():.3f}'
-                )
-                writer.add_scalar('loss/train', loss.item(), i_step)
-                writer.add_scalar(
-                    'train_accuracy/support',
-                    accuracy_support.item(),
-                    i_step
-                )
-                writer.add_scalar(
-                    'train_accuracy/query',
-                    accuracy_query.item(),
-                    i_step
                 )
 
             if i_step % VAL_INTERVAL == 0:
@@ -305,19 +309,19 @@ class ProtoNetTrainer:
                     f'support accuracy: {accuracy_support:.3f}, '
                     f'query accuracy: {accuracy_query:.3f}'
                 )
-                writer.add_scalar('loss/val', loss, i_step)
+                writer.add_scalar('enc_loss/val', loss, i_step)
                 writer.add_scalar(
-                    'val_accuracy/support',
+                    'enc_val_accuracy/support',
                     accuracy_support,
                     i_step
                 )
                 writer.add_scalar(
-                    'val_accuracy/query',
+                    'enc_val_accuracy/query',
                     accuracy_query,
                     i_step
                 )
 
-            if i_step % SAVE_INTERVAL == 0:
+            if i_step % ENC_SAVE_INTERVAL == 0:
                 self._save(i_step, aux_string = 'encd')
 
     def train_threshold(self, dataloader_train, dataloader_val, writer, num_train_iterations, batch_size):
@@ -333,7 +337,7 @@ class ProtoNetTrainer:
             writer (SummaryWriter): TensorBoard logger
         """
         print(f'Starting training at iteration {self._start_train_enc_step}.')
-        for i_step in tqdm(range(self._start_train_enc_step, num_train_iterations+1)):
+        for i_step in tqdm(range(self._start_train_thres_step, num_train_iterations+1)):
             self.encoder_optimizer.zero_grad()
             loss_batch = []
             accuracy_support_batch = []
@@ -343,7 +347,7 @@ class ProtoNetTrainer:
             # print(f'Data time: {time.time() - data_start}')
             for task in task_batch:
                 # step_start = time.time()
-                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task)
+                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=i_step % PRINT_INTERVAL == 0)
                 # print(f'Step time: {time.time() - step_start}')
                 loss_batch.append(loss_task)
                 accuracy_query_batch.append(accuracy_query_task)
@@ -354,23 +358,23 @@ class ProtoNetTrainer:
             loss.backward()
             self.threshold_optimizer.step()
 
+            writer.add_scalar('thresh_loss/train', loss.item(), i_step)
+            writer.add_scalar(
+                'thresh_train_accuracy/support',
+                accuracy_support.item(),
+                i_step
+            )
+            writer.add_scalar(
+                'thresh_train_accuracy/query',
+                accuracy_query.item(),
+                i_step
+            )
             if i_step % PRINT_INTERVAL == 0:
                 print(
                     f'Iteration {i_step}: '
                     f'loss: {loss.item():.3f}, '
                     f'support accuracy: {accuracy_support.item():.3f}, '
                     f'query accuracy: {accuracy_query.item():.3f}'
-                )
-                writer.add_scalar('loss/train', loss.item(), i_step)
-                writer.add_scalar(
-                    'train_accuracy/support',
-                    accuracy_support.item(),
-                    i_step
-                )
-                writer.add_scalar(
-                    'train_accuracy/query',
-                    accuracy_query.item(),
-                    i_step
                 )
 
             if i_step % VAL_INTERVAL == 0:
@@ -383,7 +387,7 @@ class ProtoNetTrainer:
                         accuracy_query_batch = []
                         task_batch = next(iter(dataloader_val))
                         for task in task_batch:
-                            loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task)
+                            loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=True)
                             loss_batch.append(loss_task)
                             accuracy_query_batch.append(accuracy_query_task)
                             accuracy_support_batch.append(accuracy_support_task)
@@ -402,19 +406,19 @@ class ProtoNetTrainer:
                     f'support accuracy: {accuracy_support:.3f}, '
                     f'query accuracy: {accuracy_query:.3f}'
                 )
-                writer.add_scalar('loss/val', loss, i_step)
+                writer.add_scalar('thresh_loss/val', loss, i_step)
                 writer.add_scalar(
-                    'val_accuracy/support',
+                    'thresh_val_accuracy/support',
                     accuracy_support,
                     i_step
                 )
                 writer.add_scalar(
-                    'val_accuracy/query',
+                    'thresh_val_accuracy/query',
                     accuracy_query,
                     i_step
                 )
 
-            if i_step % SAVE_INTERVAL == 0:
+            if i_step % THRESHOLD_SAVE_INTERVAL == 0:
                 self._save(i_step, aux_string = 'thres')
 ################################################ TODO ##############################################
     # def test(self, dataloader_test):
@@ -501,17 +505,20 @@ class ProtoNetTrainer:
 
 def main(args):
     log_dir = args.log_dir
+    log_dir = '/home/advaya/CS330-Project/logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
     if log_dir is None:
         log_dir = f'./logs/protonet/cifar{args.num_way}.' \
             f'support_eps:{args.num_support_epsilon}.query_eps:{args.num_query_epsilon}.'\
             f'support_novel:{args.num_support_novel}.query_novel:{args.num_query_novel}.'\
             f'eps_lr:{args.threshold_learning_rate}.novel_lr:{args.encoder_learning_rate}.'\
+            f'eps_iters:{args.num_threshold_train_iterations}.novel_lr:{args.num_encoder_train_iterations}.'\
             f'batch_size:{args.batch_size}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
 
     encoder = SupConResNet(args.model, feat_dim=args.feature_dim)
-    encoder.load_state_dict(torch.load(args.encoder_path)['model'])
+    if args.pretrained:
+        encoder.load_state_dict(torch.load(args.encoder_path)['model'])
     protonet = ProtoNetTrainer(encoder, args.encoder_learning_rate, args.threshold_learning_rate, log_dir)
 
     if args.checkpoint_step > -1 and (args.encd_checkpoint ^ args.thresh_checkpoint):
@@ -583,6 +590,7 @@ if __name__ == '__main__':
     parser.add_argument('--encoder_path', type=str, default='save/SupCon/cifar100_models/SupCon_cifar10_resnet18_lr_0.5_decay_0.0001_bsz_2048_temp_0.1_embdim_2048_trial_0_partition_train_data/cifar10-dataset_cosine_warm/ckpt_epoch_100.pth')
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--feature_dim', type=int, default=2048)
+    parser.add_argument('--pretrained', type=bool, default=True)
 
     main_args = parser.parse_args()
     main(main_args)

@@ -4,6 +4,9 @@ import torch
 from torchvision import datasets
 import numpy as np
 import pickle
+from typing import TypeVar
+
+CIFARDatasetType = TypeVar("CIFARDatasetType", bound="CIFARDataset")
 
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
@@ -108,6 +111,8 @@ class CIFARDataset(Dataset):
         self._is_epsilon = False
         self._is_novel = False
         self.image_type = self.images[0].dtype
+        self.label_idx = {lab: np.where(self.labels == lab)[0] for lab in self.unique_labels}
+        self.shuffle_labels = True
 
     
     def __getitem__(self, index):
@@ -144,7 +149,8 @@ class CIFARDataset(Dataset):
         support_images = np.zeros((support_classes.shape[0], support_size, *image_shape), dtype=self.image_type)
         support_labels = np.zeros((support_classes.shape[0], support_size))
         for i, lab in enumerate(support_classes):
-            idx = np.where(self.labels == lab)[0]
+            # idx = np.where(self.labels == lab)[0]
+            idx = self.label_idx[lab]
             k_idx = np.random.choice(idx, support_size)
             support_images[i] = self.images[k_idx]
             support_labels[i] = 0
@@ -154,7 +160,8 @@ class CIFARDataset(Dataset):
         query_labels = np.zeros((unique_labels.shape[0], query_size))
 
         for i, lab in enumerate(unique_labels):
-            idx = np.where(self.labels == lab)[0]
+            # idx = np.where(self.labels == lab)[0]
+            idx = self.label_idx[lab]
             k_idx = np.random.choice(idx, query_size)
             query_images[i] = self.images[k_idx]
             query_labels[i] = lab in ood_classes
@@ -186,9 +193,13 @@ class CIFARDataset(Dataset):
         image_shape = self.images[0].shape
         support_images = np.zeros((unique_labels.shape[0], support_size, *image_shape), dtype=self.image_type)
         support_labels = np.zeros((unique_labels.shape[0], support_size))
-        mappings = np.random.permutation(unique_labels)
+        if self.shuffle_labels:
+            mappings = np.random.permutation(unique_labels)
+        else:
+            mappings = unique_labels
         for i, lab in enumerate(unique_labels):
-            idx = np.where(self.labels == lab)[0]
+            # idx = np.where(self.labels == lab)[0]
+            idx = self.label_idx[lab]
             k_idx = np.random.choice(idx, support_size)
             support_images[i] = self.images[k_idx]
             support_labels[i] = mappings[lab]
@@ -202,7 +213,8 @@ class CIFARDataset(Dataset):
         query_labels = np.zeros((unique_labels.shape[0], query_size))
 
         for i, lab in enumerate(unique_labels):
-            idx = np.where(self.labels == lab)[0]
+            # idx = np.where(self.labels == lab)[0]
+            idx = self.label_idx[lab]
             k_idx = np.random.choice(idx, query_size)
             query_images[i] = self.images[k_idx]
             query_labels[i] = mappings[lab]
@@ -231,6 +243,19 @@ class CIFARDataset(Dataset):
     def switch_to_default(self):
         self._is_epsilon = False
         self._is_novel = False
+
+    def merge_with(self, dataset: CIFARDatasetType):
+        new_images = np.append(self.images, dataset.images, axis=0)
+        new_labels = np.append(self.labels, dataset.labels, axis=0)
+        shuffled_idx = np.random.permutation(list(range(len(new_images))))
+        new_images = new_images[shuffled_idx]
+        new_labels = new_labels[shuffled_idx]
+        new_unique_labels = np.unique(new_labels)
+        new_label_idx = {lab: np.where(new_labels == lab)[0] for lab in new_unique_labels}
+        self.images = new_images
+        self.labels = new_labels
+        self.label_idx = new_label_idx
+        self.unique_labels = new_unique_labels
 
 
 if __name__ == '__main__':
