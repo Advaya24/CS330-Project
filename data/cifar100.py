@@ -191,8 +191,8 @@ class CIFARDataset(Dataset):
         out_images = []
         for image in images:
             image = self.transform(image)
-            if query:
-                image = self.gauss_noise_tensor(image)
+            # if query:
+            #     image = self.gauss_noise_tensor(image)
             out_images.append(image)
         return torch.stack(out_images)
 
