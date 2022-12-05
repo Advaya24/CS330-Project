@@ -116,7 +116,7 @@ class ProtoNetTrainer:
         self._start_train_enc_step = 1
         self._start_train_thres_step = 1
 
-    def embd_train_step(self, task):
+    def embd_train_step(self, task, print_=False):
         """Computes ProtoNet mean loss (and accuracy) on a batch of tasks.
 
         Args:
@@ -162,7 +162,7 @@ class ProtoNetTrainer:
         return (
             F.cross_entropy(logits_query, labels_query),
             util.score(logits_support, labels_support),
-            util.score(logits_query, labels_query, print_=True)
+            util.score(logits_query, labels_query, print_)
         )
 
     def threshold_train_step(self, task, print_=False):
@@ -201,12 +201,12 @@ class ProtoNetTrainer:
 
     def train(self, dataloader_train, dataloader_val, writer, args):
         # train encoder
-        # print("===========================")
-        # print("     Training Encoder:")
-        # print("===========================")
-        # dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        # dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
-        # self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
+        print("===========================")
+        print("     Training Encoder:")
+        print("===========================")
+        dataloader_train.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        dataloader_val.dataset.switch_to_novel(args.num_support_novel, args.num_shots_novel, args.num_query_novel, args.seen_unseen_split)
+        self.train_encoder(dataloader_train, dataloader_val, writer, args.num_encoder_train_iterations, args.batch_size)
 
         # train epsilon
         print("===========================")
@@ -347,7 +347,7 @@ class ProtoNetTrainer:
             # print(f'Data time: {time.time() - data_start}')
             for task in task_batch:
                 # step_start = time.time()
-                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=i_step % PRINT_INTERVAL == 0)
+                loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=False)
                 # print(f'Step time: {time.time() - step_start}')
                 loss_batch.append(loss_task)
                 accuracy_query_batch.append(accuracy_query_task)
@@ -387,7 +387,7 @@ class ProtoNetTrainer:
                         accuracy_query_batch = []
                         task_batch = next(iter(dataloader_val))
                         for task in task_batch:
-                            loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=True)
+                            loss_task, accuracy_support_task, accuracy_query_task = self.threshold_train_step(task, print_=False)
                             loss_batch.append(loss_task)
                             accuracy_query_batch.append(accuracy_query_task)
                             accuracy_support_batch.append(accuracy_support_task)
@@ -505,7 +505,7 @@ class ProtoNetTrainer:
 
 def main(args):
     log_dir = args.log_dir
-    log_dir = '/home/advaya/CS330-Project/logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
+    # log_dir = '/home/advaya/CS330-Project/logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
     if log_dir is None:
         log_dir = f'./logs/protonet/cifar{args.num_way}.' \
             f'support_eps:{args.num_support_epsilon}.query_eps:{args.num_query_epsilon}.'\
@@ -518,11 +518,19 @@ def main(args):
 
     encoder = SupConResNet(args.model, feat_dim=args.feature_dim)
     if args.pretrained:
+        print("Pretrained encoder")
         encoder.load_state_dict(torch.load(args.encoder_path)['model'])
     protonet = ProtoNetTrainer(encoder, args.encoder_learning_rate, args.threshold_learning_rate, log_dir)
+    tmp = log_dir
 
     if args.checkpoint_step > -1 and (args.encd_checkpoint ^ args.thresh_checkpoint):
+        protonet._log_dir = 'logs/protonet/cifar10.support_eps:5.query_eps:15.support_novel:5.query_novel:15.eps_lr:0.01.novel_lr:0.001.batch_size:16'
         protonet.load(args.checkpoint_step, 'encd' if args.encd_checkpoint else 'thres', args.num_encoder_train_iterations)
+        protonet._log_dir = tmp
+        for g in protonet.threshold_optimizer.param_groups:
+            g['lr'] = args.threshold_learning_rate
+        for g in protonet.encoder_optimizer.param_groups:
+            g['lr'] = args.threshold_learning_rate
     else:
         print('Checkpoint loading skipped.')
 
@@ -590,7 +598,7 @@ if __name__ == '__main__':
     parser.add_argument('--encoder_path', type=str, default='save/SupCon/cifar100_models/SupCon_cifar10_resnet18_lr_0.5_decay_0.0001_bsz_2048_temp_0.1_embdim_2048_trial_0_partition_train_data/cifar10-dataset_cosine_warm/ckpt_epoch_100.pth')
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--feature_dim', type=int, default=2048)
-    parser.add_argument('--pretrained', type=bool, default=True)
+    parser.add_argument('--pretrained', default=True, action='store_false')
 
     main_args = parser.parse_args()
     main(main_args)

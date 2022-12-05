@@ -145,7 +145,10 @@ class CIFARDataset(Dataset):
     def sample_epsilon(self, support_size=5, query_size=15, split=4/6):
         unique_labels = self.unique_labels
         image_shape = self.image_shape
-        support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
+        if self.shuffle_labels:
+            support_classes = np.random.choice(unique_labels, int(len(unique_labels)*split), replace=False)
+        else:
+            support_classes = unique_labels[:int(len(unique_labels)*split)]
         support_images = np.zeros((support_classes.shape[0], support_size, *image_shape), dtype=self.image_type)
         support_labels = np.zeros((support_classes.shape[0], support_size))
         for i, lab in enumerate(support_classes):
@@ -167,14 +170,30 @@ class CIFARDataset(Dataset):
             query_labels[i] = lab in ood_classes
 
         support_images = self.transform_batch(support_images.reshape(-1, *image_shape)).reshape(*support_images.shape[:2], *image_shape[::-1])
-        query_images = self.transform_batch(query_images.reshape(-1, *image_shape)).reshape(*query_images.shape[:2], *image_shape[::-1])
+        query_images = self.transform_batch(query_images.reshape(-1, *image_shape), query=True).reshape(*query_images.shape[:2], *image_shape[::-1])
 
         return support_images, torch.tensor(support_labels), query_images, torch.tensor(query_labels)
 
-    def transform_batch(self, images):
+    def gauss_noise_tensor(self, img):
+        assert isinstance(img, torch.Tensor)
+        dtype = img.dtype
+        if not img.is_floating_point():
+            img = img.to(torch.float32)
+        
+        sigma = 0.10
+        
+        out = img + sigma * torch.randn_like(img)
+        
+        if out.dtype != dtype:
+            out = out.to(dtype)
+        return out
+    def transform_batch(self, images, query=False):
         out_images = []
         for image in images:
-            out_images.append(self.transform(image))
+            image = self.transform(image)
+            if query:
+                image = self.gauss_noise_tensor(image)
+            out_images.append(image)
         return torch.stack(out_images)
 
     def sample_novel_cls(self, support_size=5, num_novels_in_support=1, query_size=15, split=4/6):
@@ -205,7 +224,10 @@ class CIFARDataset(Dataset):
             support_labels[i] = mappings[lab]
 
         num_ood = int(unique_labels.shape[0] * (1-split))
-        mask_row_idx = np.random.choice(unique_labels, num_ood, replace=False)
+        if self.shuffle_labels:
+            mask_row_idx = np.random.choice(unique_labels, num_ood, replace=False)
+        else:
+            mask_row_idx = unique_labels[-num_ood:]
         support_mask = np.ones((unique_labels.shape[0], support_size, 1, 1, 1))
         support_mask[mask_row_idx, num_novels_in_support:] = 0
 
@@ -221,7 +243,7 @@ class CIFARDataset(Dataset):
         
 
         support_images = self.transform_batch(support_images.reshape(-1, *image_shape)).reshape(*support_images.shape[:2], *image_shape[::-1])
-        query_images = self.transform_batch(query_images.reshape(-1, *image_shape)).reshape(*query_images.shape[:2], *image_shape[::-1])
+        query_images = self.transform_batch(query_images.reshape(-1, *image_shape), query=True).reshape(*query_images.shape[:2], *image_shape[::-1])
 
         return support_images, torch.tensor(support_labels), torch.tensor(support_mask), query_images, torch.tensor(query_labels)
     
