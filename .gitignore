@@ -2,3 +2,5 @@ save
 venv
 **/*.out
 **/*.pyc
+logs
+pretraining logs
