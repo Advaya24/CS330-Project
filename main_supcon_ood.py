@@ -15,8 +15,8 @@ from pretraining.util import TwoCropTransform, AverageMeter
 from pretraining.util import adjust_learning_rate, warmup_learning_rate
 from pretraining.util import set_optimizer, save_model
 from pretraining.networks.resnet_big import SupConResNet
-from data.cifar100 import CIFARDataset
-from data.cifar100 import CIFARData
+from data.cifardata import CIFARDataset
+from data.cifardata import CIFARData
 from pretraining.losses import SupConLoss
 
 # try:

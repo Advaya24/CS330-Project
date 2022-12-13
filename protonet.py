@@ -13,7 +13,7 @@ from torch.utils import tensorboard
 from torchvision import transforms
 
 import util
-from data.cifar100 import CIFARDataset, CIFARData
+from data.cifardata import CIFARDataset, CIFARData
 from pretraining.networks.resnet_big import SupConResNet
 from tqdm import tqdm
 import time
